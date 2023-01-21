@@ -11,6 +11,7 @@
 #include "mediasink/AudioSink.h"
 #include "mediasink/AudioSinkWrapper.h"
 #include "mediasink/DecodedStream.h"
+#include "mediasink/MultiplexerSink.h"
 #include "mediasink/VideoSink.h"
 #include "mozilla/Logging.h"
 #include "mozilla/MathAlgorithms.h"
@@ -3359,20 +3360,6 @@ void MediaDecoderStateMachine::AudioAudibleChanged(bool aAudible) {
 }
 
 MediaSink* MediaDecoderStateMachine::CreateAudioSink() {
-  if (mOutputCaptureState != MediaDecoder::OutputCaptureState::None) {
-    DecodedStream* stream = new DecodedStream(
-        this,
-        mOutputCaptureState == MediaDecoder::OutputCaptureState::Capture
-            ? mOutputDummyTrack.Ref()
-            : nullptr,
-        mOutputTracks, mVolume, mPlaybackRate, mPreservesPitch, mAudioQueue,
-        mVideoQueue, mSinkDevice.Ref());
-    mAudibleListener.DisconnectIfExists();
-    mAudibleListener = stream->AudibleEvent().Connect(
-        OwnerThread(), this, &MediaDecoderStateMachine::AudioAudibleChanged);
-    return stream;
-  }
-
   auto audioSinkCreator = [s = RefPtr<MediaDecoderStateMachine>(this), this]() {
     MOZ_ASSERT(OnTaskQueue());
     AudioSink* audioSink =
@@ -3387,8 +3374,31 @@ MediaSink* MediaDecoderStateMachine::CreateAudioSink() {
                               mSinkDevice.Ref());
 }
 
+MediaSink* MediaDecoderStateMachine::CreateDecodedStream() {
+  DecodedStream* stream = new DecodedStream(
+      this,
+      mOutputCaptureState == MediaDecoder::OutputCaptureState::Capture
+          ? mOutputDummyTrack.Ref()
+          : nullptr,
+      mOutputTracks, 1, mPlaybackRate, true, mAudioQueue, mVideoQueue,
+      mSinkDevice.Ref());
+  mAudibleListener.DisconnectIfExists();
+  mAudibleListener = stream->AudibleEvent().Connect(
+      OwnerThread(), this, &MediaDecoderStateMachine::AudioAudibleChanged);
+  return stream;
+}
+
 already_AddRefed<MediaSink> MediaDecoderStateMachine::CreateMediaSink() {
   MOZ_ASSERT(OnTaskQueue());
+
+  RefPtr<MediaSink> decodedStream;
+  if (mOutputCaptureState != MediaDecoder::OutputCaptureState::None) {
+    // We probaby should create decodedStream before the two sinks to make sure
+    // that each new frame goes to decodedStream first. Otherwise, the sinks may
+    // pop the frame before decodedStream sees it.
+    decodedStream = CreateDecodedStream();
+  }
+
   RefPtr<MediaSink> audioSink = CreateAudioSink();
   RefPtr<MediaSink> mediaSink =
       new VideoSink(mTaskQueue, audioSink, mVideoQueue, mVideoFrameContainer,
@@ -3396,7 +3406,14 @@ already_AddRefed<MediaSink> MediaDecoderStateMachine::CreateMediaSink() {
   if (mSecondaryVideoContainer.Ref()) {
     mediaSink->SetSecondaryVideoContainer(mSecondaryVideoContainer.Ref());
   }
-  return mediaSink.forget();
+
+  if (mOutputCaptureState != MediaDecoder::OutputCaptureState::None) {
+    RefPtr<MediaSink> multiplexerSink =
+        new MultiplexerSink(mediaSink, decodedStream);
+    return multiplexerSink.forget();
+  } else {
+    return mediaSink.forget();
+  }
 }
 
 TimeUnit MediaDecoderStateMachine::GetDecodedAudioDuration() const {
@@ -4298,14 +4315,12 @@ void MediaDecoderStateMachine::UpdateOutputCaptured() {
   // Don't create a new media sink if we're still suspending media sink.
   if (!mIsMediaSinkSuspended) {
     const bool wasPlaying = IsPlaying();
-    // Stop and shut down the existing sink.
-    StopMediaSink();
-    mMediaSink->Shutdown();
 
-    // Create a new sink according to whether output is captured.
-    mMediaSink = CreateMediaSink();
+    // Create a new sink for the captured output.
+    RefPtr<MediaSink> decodedStream = CreateDecodedStream();
+    mMediaSink = new MultiplexerSink(mMediaSink, decodedStream);
     if (wasPlaying) {
-      DebugOnly<nsresult> rv = StartMediaSink();
+      DebugOnly<nsresult> rv = decodedStream->Start(GetMediaTime(), Info());
       MOZ_ASSERT(NS_SUCCEEDED(rv));
     }
   }

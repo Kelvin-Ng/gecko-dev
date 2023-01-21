@@ -9,6 +9,7 @@ UNIFIED_SOURCES += [
     "AudioSink.cpp",
     "AudioSinkWrapper.cpp",
     "DecodedStream.cpp",
+    "MultiplexerSink.cpp",
     "VideoSink.cpp",
 ]
 

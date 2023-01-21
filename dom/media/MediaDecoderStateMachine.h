@@ -325,6 +325,7 @@ class MediaDecoderStateMachine
   void UpdatePlaybackPositionPeriodically();
 
   MediaSink* CreateAudioSink();
+  MediaSink* CreateDecodedStream();
 
   // Always create mediasink which contains an AudioSink or DecodedStream
   // inside.
