@@ -1097,15 +1097,6 @@ void DecodedStream::NotifyOutput(int64_t aTime) {
   }
   LOG_DS(LogLevel::Verbose, "time is now %" PRId64,
          currentTime.ToMicroseconds());
-
-  // Remove audio samples that have been played by MTG from the queue.
-  RefPtr<AudioData> a = mAudioQueue.PeekFront();
-  for (; a && a->GetEndTime() <= currentTime;) {
-    LOG_DS(LogLevel::Debug, "Dropping audio [%" PRId64 ",%" PRId64 "]",
-           a->mTime.ToMicroseconds(), a->GetEndTime().ToMicroseconds());
-    RefPtr<AudioData> releaseMe = mAudioQueue.PopFront();
-    a = mAudioQueue.PeekFront();
-  }
 }
 
 void DecodedStream::PlayingChanged() {
